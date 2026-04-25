@@ -1,6 +1,8 @@
 module Z80.Linker
   ( LinkerError (..)
+  , LabelMap
   , assemble
+  , assembleWithSymbols
   ) where
 
 import Data.Bits        (shiftR, (.&.))
@@ -41,10 +43,17 @@ assemble
   :: Word16           -- ^ origin address
   -> Seq Statement
   -> Either LinkerError BS.ByteString
-assemble origin stmts = do
+assemble origin stmts = fst <$> assembleWithSymbols origin stmts
+
+-- | Like 'assemble' but also returns the resolved label→address map.
+assembleWithSymbols
+  :: Word16
+  -> Seq Statement
+  -> Either LinkerError (BS.ByteString, LabelMap)
+assembleWithSymbols origin stmts = do
   lmap  <- buildLabelMap origin stmts
   bytes <- emitBytes lmap origin stmts
-  pure (BS.toStrict (BB.toLazyByteString bytes))
+  pure (BS.toStrict (BB.toLazyByteString bytes), lmap)
 
 -- ---------------------------------------------------------------------------
 -- Pass 1: build label map

@@ -71,6 +71,10 @@ test-suite hsgg-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
+      Emulicious.Assert
+      Emulicious.DAP
+      Emulicious.Runner
+      ROMSpec
       Paths_hsgg
   autogen-modules:
       Paths_hsgg
@@ -79,12 +83,19 @@ test-suite hsgg-test
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       QuickCheck
+    , aeson
     , base >=4.7 && <5
+    , base64-bytestring
     , bytestring
     , containers
+    , directory
+    , filepath
     , hsgg
     , hspec
     , hspec-discover
     , mtl
+    , network
+    , process
     , text
+    , unix
   default-language: Haskell2010

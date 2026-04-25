@@ -74,3 +74,10 @@ tests:
     - hspec
     - hspec-discover
     - QuickCheck
+    - aeson
+    - base64-bytestring
+    - network
+    - process
+    - directory
+    - filepath
+    - unix

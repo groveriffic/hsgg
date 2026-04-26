@@ -9,6 +9,7 @@ module Emulicious.DAP
   , readMemory
   , writeMemory
   , pauseExecution
+  , continueExecution
   , evaluate
   , initialize
   , launch
@@ -135,6 +136,14 @@ pauseExecution client = do
   seq_ <- sendRequest client "pause" $ object ["threadId" .= (1 :: Int)]
   _ <- waitForResponse client seq_
   waitForEvent client "stopped"
+
+-- | Resume execution after a pause. Returns once the adapter
+-- acknowledges the request.
+continueExecution :: DAPClient -> IO ()
+continueExecution client = do
+  seq_ <- sendRequest client "continue" $ object ["threadId" .= (1 :: Int)]
+  _ <- waitForResponse client seq_
+  pure ()
 
 -- | Evaluate an expression and return the result string.
 evaluate :: DAPClient -> Text -> IO Text

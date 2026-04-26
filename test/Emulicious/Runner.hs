@@ -45,11 +45,15 @@ withEmulicious romPath action =
         (try (DAP.disconnect client) :: IO (Either IOException ()))
 
 -- | Inject a keypress into the running Emulicious window.
--- Key names follow xdotool conventions: "a", "s", "Return", etc.
+-- Holds the key down for ~80 ms so Emulicious's per-frame input poll
+-- (one read per ~16 ms emulated frame) reliably observes it. Key names
+-- follow xdotool conventions: "a", "s", "Return", "Up", etc.
 pressButton :: ContainerID -> String -> IO ()
 pressButton cid key = do
   winId <- retryFindWindow cid 50
-  dockerExec cid ["xdotool", "key", "--window", winId, key]
+  dockerExec cid ["xdotool", "keydown", "--window", winId, key]
+  threadDelay 80_000
+  dockerExec cid ["xdotool", "keyup",   "--window", winId, key]
 
 -- | Capture a screenshot of the Emulicious window and write it to @destPath@.
 captureScreen :: ContainerID -> FilePath -> IO ()
@@ -89,14 +93,18 @@ dockerExec :: ContainerID -> [String] -> IO ()
 dockerExec cid args =
   callProcess "docker" (["exec", "-e", "DISPLAY=:99", cid] <> args)
 
--- | Retry until xdotool finds a window owned by PID 1 (Emulicious in the
--- container, which becomes PID 1 via exec in the entrypoint).
+-- | Retry until xdotool finds AWT's @FocusProxy@ child window. AWT/XAWT
+-- routes synthetic key events through this proxy; sending to the visible
+-- top-level frame with @--window@ does not deliver them to the
+-- KeyListener that Emulicious installs.
 retryFindWindow :: ContainerID -> Int -> IO String
 retryFindWindow _ 0 =
-  fail "pressButton: timed out waiting for Emulicious window"
+  fail "pressButton: timed out waiting for Emulicious FocusProxy window"
 retryFindWindow cid attempts = do
   (rc, out, _) <- readProcessWithExitCode "docker"
-    ["exec", "-e", "DISPLAY=:99", cid, "xdotool", "search", "--pid", "1"] ""
+    [ "exec", "-e", "DISPLAY=:99", cid
+    , "xdotool", "search", "--name", "FocusProxy"
+    ] ""
   case (rc, lines out) of
     (ExitSuccess, (w:_)) -> pure (trim w)
     _ -> do

@@ -3,6 +3,7 @@
 module Emulicious.Assert
   ( runROM
   , runROMInteractive
+  , runROMSession
   , assertRAM
   , assertRAMRange
   , ContainerID
@@ -55,6 +56,22 @@ runROMInteractive name program setup assertions = do
     threadDelay 300_000
     _ <- DAP.pauseExecution client
     assertions client
+
+-- | Assemble @program@ and start Emulicious, then hand the running
+-- session to @action@. The ROM is executing on entry; @action@ is
+-- responsible for any pause/inspect/resume orchestration via the
+-- 'DAPClient'. Use this for tests that need finer control than 'runROM'
+-- (e.g. multi-step input scenarios).
+runROMSession :: String -> Asm ()
+              -> (ContainerID -> DAPClient -> IO ())
+              -> IO ()
+runROMSession name program action = do
+  rom <- either (fail . ("Assembler error: " <>) . show) pure
+                (assemble defaultROMConfig program)
+  createDirectoryIfMissing True "tmp"
+  let romPath = "tmp" </> "test-" <> name <> ".gg"
+  BS.writeFile romPath rom
+  withEmulicious romPath action
 
 -- | Assert that the byte at @addr@ equals @expected@.
 assertRAM :: DAPClient -> Word16 -> Word8 -> Expectation

@@ -81,8 +81,8 @@ spawnEmu romPath = do
 
 killEmu :: (ContainerID, FilePath) -> IO ()
 killEmu (cid, _) = do
-  _ <- (try (callProcess "docker" ["stop", "--timeout", "2", cid])
-          :: IO (Either IOException ()))
+  _ <- (try (readProcess "docker" ["stop", "--timeout", "2", cid] "")
+          :: IO (Either IOException String))
   pure ()
 
 dockerExec :: ContainerID -> [String] -> IO ()

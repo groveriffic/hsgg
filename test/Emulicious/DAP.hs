@@ -7,6 +7,7 @@ module Emulicious.DAP
   , waitForEvent
   , waitForResponse
   , readMemory
+  , writeMemory
   , pauseExecution
   , evaluate
   , initialize
@@ -22,7 +23,7 @@ import qualified Data.ByteString.Lazy   as LBS
 import qualified Data.ByteString.Char8  as BC8
 import           Data.Foldable          (toList)
 import           Data.List              (find)
-import           Data.Maybe             (fromMaybe)
+import qualified Data.ByteString.Base64 as B64
 import           Data.Word              (Word8, Word16)
 import           Numeric                (readHex, showHex)
 import           Network.Socket         (Socket, AddrInfo (..), getAddrInfo,
@@ -32,7 +33,6 @@ import qualified Network.Socket         as NS
 import           Network.Socket.ByteString (recv, sendAll)
 import           Data.Text              (Text)
 import qualified Data.Text              as T
-import           Data.Text.Encoding     (encodeUtf8)
 import           System.IO              (hPutStrLn, stderr)
 
 data DAPClient = DAPClient
@@ -150,6 +150,20 @@ evaluate client expr = do
            ; pure r } of
     Just r  -> pure r
     Nothing -> fail $ "evaluate: no result for " <> T.unpack expr
+
+-- | Write @bytes@ starting at @addr@.
+writeMemory :: DAPClient -> Word16 -> BS.ByteString -> IO ()
+writeMemory client addr bytes = do
+  let memRef = T.pack $ "0x" <> showHex addr ""
+      encoded = B64.encode bytes
+  seq_ <- sendRequest client "writeMemory" $ object
+    [ "memoryReference" .= memRef
+    , "data"            .= decodeUtf8 encoded
+    ]
+  _ <- waitForResponse client seq_
+  pure ()
+  where
+    decodeUtf8 = T.pack . BC8.unpack
 
 -- | Read @count@ bytes starting at @addr@.
 -- Uses evaluate → variables to read one byte at a time.

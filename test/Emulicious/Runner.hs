@@ -1,29 +1,26 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings  #-}
 module Emulicious.Runner
-  ( withEmulicious
-  , emuliciousJar
+  ( ContainerID
+  , withEmulicious
   , testTimeoutSeconds
+  , pressButton
+  , captureScreen
   ) where
 
-import           Control.Concurrent     (threadDelay)
-import           Control.Exception      (bracket, finally, IOException, try)
-import           System.Directory       (getHomeDirectory)
-import           System.Exit            (ExitCode (..))
-import           System.FilePath        ((</>))
-import           System.Process         (createProcess, proc, terminateProcess,
-                                         getPid, waitForProcess,
-                                         CreateProcess (..), create_group)
-import           System.Posix.Process   (getProcessGroupIDOf)
-import           System.Posix.Signals   (signalProcessGroup, killProcess)
-import           System.Posix.Types     (ProcessGroupID)
-import           System.Timeout         (timeout)
-import qualified Emulicious.DAP         as DAP
+import           Control.Concurrent          (threadDelay)
+import           Control.Exception           (finally, IOException, try, bracket)
+import           Data.Char                   (isSpace)
+import           Data.List                   (dropWhileEnd)
+import           System.Directory            (getHomeDirectory, makeAbsolute)
+import           System.Exit                 (ExitCode (..))
+import           System.FilePath             ((</>), takeDirectory, takeFileName)
+import           System.Process              (callProcess, readProcess,
+                                              readProcessWithExitCode)
+import           System.Timeout              (timeout)
+import qualified Emulicious.DAP              as DAP
 
-emuliciousJar :: IO FilePath
-emuliciousJar = do
-  home <- getHomeDirectory
-  pure $ home </> "Emulicious" </> "Emulicious.jar"
+type ContainerID = String
 
 dapPort :: Int
 dapPort = 58870
@@ -31,53 +28,102 @@ dapPort = 58870
 testTimeoutSeconds :: Int
 testTimeoutSeconds = 15
 
-withEmulicious :: FilePath -> (DAP.DAPClient -> IO a) -> IO a
+withEmulicious :: FilePath -> (ContainerID -> DAP.DAPClient -> IO a) -> IO a
 withEmulicious romPath action =
-  bracket spawnEmu killEmu $ \_ph -> do
-    result <- timeout (testTimeoutSeconds * 1_000_000) run
+  bracket (spawnEmu romPath) killEmu $ \(cid, containerRomPath) -> do
+    result <- timeout (testTimeoutSeconds * 1_000_000) (run cid containerRomPath)
     case result of
       Just v  -> pure v
       Nothing -> fail $ "withEmulicious: test timed out after "
                           <> show testTimeoutSeconds <> "s"
   where
-    run = do
-      client <- retryConnect dapPort 100
-      DAP.initialize client
-      DAP.launch client romPath
+    run cid containerRomPath = do
+      client <- retryHandshake dapPort 100
+      DAP.launch client containerRomPath
       _ <- DAP.waitForEvent client "initialized"
-      action client `finally`
+      action cid client `finally`
         (try (DAP.disconnect client) :: IO (Either IOException ()))
 
-    -- create_group=True puts Emulicious in its own process group so we can
-    -- kill it without sending SIGKILL to our own test process.
-    spawnEmu = do
-      jar <- emuliciousJar
-      (_, _, _, ph) <- createProcess
-        (proc "java" ["-jar", jar, "-remotedebug", show dapPort, romPath])
-        { create_group = True }
-      pure ph
+-- | Inject a keypress into the running Emulicious window.
+-- Key names follow xdotool conventions: "a", "s", "Return", etc.
+pressButton :: ContainerID -> String -> IO ()
+pressButton cid key = do
+  winId <- retryFindWindow cid 50
+  dockerExec cid ["xdotool", "key", "--window", winId, key]
 
-    killEmu ph = do
-      mpid <- getPid ph
-      case mpid of
-        Nothing  -> terminateProcess ph
-        Just pid -> do
-          pgid <- try (getProcessGroupIDOf pid)
-                    :: IO (Either IOException ProcessGroupID)
-          case pgid of
-            Right gid -> do
-              signalProcessGroup killProcess gid
-              _ <- try (waitForProcess ph) :: IO (Either IOException ExitCode)
-              pure ()
-            Left _    -> terminateProcess ph
+-- | Capture a screenshot of the Emulicious window and write it to @destPath@.
+captureScreen :: ContainerID -> FilePath -> IO ()
+captureScreen cid destPath = do
+  dockerExec cid ["scrot", "/tmp/screen.png"]
+  callProcess "docker" ["cp", cid <> ":/tmp/screen.png", destPath]
 
-retryConnect :: Int -> Int -> IO DAP.DAPClient
-retryConnect port attempts
-  | attempts <= 0 = fail "withEmulicious: timed out waiting for Emulicious to start"
+-- ---------------------------------------------------------------------------
+-- Internal
+-- ---------------------------------------------------------------------------
+
+spawnEmu :: FilePath -> IO (ContainerID, FilePath)
+spawnEmu romPath = do
+  absRomPath <- makeAbsolute romPath
+  home       <- getHomeDirectory
+  let jar              = home </> "Emulicious" </> "Emulicious.jar"
+      romDir           = takeDirectory absRomPath
+      romFile          = takeFileName absRomPath
+      containerRomPath = "/roms/" <> romFile
+  cid <- trim <$> readProcess "docker"
+    [ "run", "--rm", "-d"
+    , "-p", show dapPort <> ":" <> show dapPort
+    , "-v", romDir <> ":/roms:ro"
+    , "-v", jar   <> ":/emulicious/Emulicious.jar:ro"
+    , "hsgg-emulicious"
+    , containerRomPath
+    ] ""
+  pure (cid, containerRomPath)
+
+killEmu :: (ContainerID, FilePath) -> IO ()
+killEmu (cid, _) = do
+  _ <- (try (callProcess "docker" ["stop", "--timeout", "2", cid])
+          :: IO (Either IOException ()))
+  pure ()
+
+dockerExec :: ContainerID -> [String] -> IO ()
+dockerExec cid args =
+  callProcess "docker" (["exec", "-e", "DISPLAY=:99", cid] <> args)
+
+-- | Retry until xdotool finds a window owned by PID 1 (Emulicious in the
+-- container, which becomes PID 1 via exec in the entrypoint).
+retryFindWindow :: ContainerID -> Int -> IO String
+retryFindWindow _ 0 =
+  fail "pressButton: timed out waiting for Emulicious window"
+retryFindWindow cid attempts = do
+  (rc, out, _) <- readProcessWithExitCode "docker"
+    ["exec", "-e", "DISPLAY=:99", cid, "xdotool", "search", "--pid", "1"] ""
+  case (rc, lines out) of
+    (ExitSuccess, (w:_)) -> pure (trim w)
+    _ -> do
+      threadDelay 100_000
+      retryFindWindow cid (attempts - 1)
+
+-- | Connect to the DAP port and run an `initialize` request. On Docker
+-- Desktop the host-side forwarder accepts TCP before the container's DAP
+-- server is bound, so a successful TCP connect doesn't mean the adapter
+-- is ready. Retry the full handshake (connect + initialize) until it
+-- succeeds.
+retryHandshake :: Int -> Int -> IO DAP.DAPClient
+retryHandshake port attempts
+  | attempts <= 0 =
+      fail "withEmulicious: timed out waiting for Emulicious DAP handshake"
   | otherwise = do
-      result <- try (DAP.connect port) :: IO (Either IOException DAP.DAPClient)
+      result <- try attempt :: IO (Either IOException DAP.DAPClient)
       case result of
         Right client -> pure client
         Left _       -> do
-          threadDelay 100_000
-          retryConnect port (attempts - 1)
+          threadDelay 200_000
+          retryHandshake port (attempts - 1)
+  where
+    attempt = do
+      client <- DAP.connect port
+      DAP.initialize client
+      pure client
+
+trim :: String -> String
+trim = dropWhileEnd isSpace . dropWhile isSpace

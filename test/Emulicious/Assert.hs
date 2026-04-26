@@ -2,8 +2,12 @@
 {-# LANGUAGE OverloadedStrings  #-}
 module Emulicious.Assert
   ( runROM
+  , runROMInteractive
   , assertRAM
   , assertRAMRange
+  , ContainerID
+  , pressButton
+  , captureScreen
   ) where
 
 import           Control.Concurrent     (threadDelay)
@@ -17,14 +21,10 @@ import           Test.Hspec
 import           Z80
 import           Emulicious.DAP         (DAPClient)
 import qualified Emulicious.DAP         as DAP
-import           Emulicious.Runner      (withEmulicious)
+import           Emulicious.Runner      (ContainerID, withEmulicious,
+                                         pressButton, captureScreen)
 
--- | Assemble @program@, run it in Emulicious, wait for the Z80 to reach HALT,
--- then run @assertions@.
---
--- The program should end with @halt@ so it stops immediately after executing.
--- We wait a short delay then send @pause@ — safe because HALT freezes the CPU
--- instantly (the ROM has no interrupts enabled).
+-- | Assemble @program@, run it in Emulicious until HALT, then assert.
 runROM :: String -> Asm () -> (DAPClient -> IO ()) -> IO ()
 runROM name program assertions = do
   rom <- either (fail . ("Assembler error: " <>) . show) pure
@@ -32,10 +32,26 @@ runROM name program assertions = do
   createDirectoryIfMissing True "tmp"
   let romPath = "tmp" </> "test-" <> name <> ".gg"
   BS.writeFile romPath rom
-  -- withEmulicious yields after initialize+launch+initialized.
-  -- Emulicious starts execution automatically after launch; the ROM reaches
-  -- HALT near-instantly, so 300ms is more than enough before we pause.
-  withEmulicious romPath $ \client -> do
+  withEmulicious romPath $ \_cid client -> do
+    threadDelay 300_000
+    _ <- DAP.pauseExecution client
+    assertions client
+
+-- | Like 'runROM' but runs @setup@ while the ROM is executing before
+-- waiting for HALT. The setup callback receives a 'ContainerID' for
+-- calling 'pressButton' and 'captureScreen'.
+runROMInteractive :: String -> Asm ()
+                  -> (ContainerID -> DAPClient -> IO ())
+                  -> (DAPClient -> IO ())
+                  -> IO ()
+runROMInteractive name program setup assertions = do
+  rom <- either (fail . ("Assembler error: " <>) . show) pure
+                (assemble defaultROMConfig program)
+  createDirectoryIfMissing True "tmp"
+  let romPath = "tmp" </> "test-" <> name <> ".gg"
+  BS.writeFile romPath rom
+  withEmulicious romPath $ \cid client -> do
+    setup cid client
     threadDelay 300_000
     _ <- DAP.pauseExecution client
     assertions client

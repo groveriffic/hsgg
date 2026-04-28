@@ -15,6 +15,45 @@ sprX, sprY :: AddrExpr
 sprX = Lit 0xC000
 sprY = Lit 0xC001
 
+-- Note sequencer state (melody, Tone0)
+ramDur, ramStep :: AddrExpr
+ramDur  = Lit 0xC002   -- frames remaining in current note (counts down)
+ramStep = Lit 0xC003   -- current note index (0–3, cycles through Spring motif)
+
+-- Bass sequencer state (Tone1)
+ramBaseDur, ramBaseStep :: AddrExpr
+ramBaseDur  = Lit 0xC004
+ramBaseStep = Lit 0xC005
+
+-- Harmony sequencer state (Tone2)
+ramHarmDur, ramHarmStep :: AddrExpr
+ramHarmDur  = Lit 0xC006
+ramHarmStep = Lit 0xC007
+
+-- Noise channel state
+ramNoiseDur, ramNoiseEnv :: AddrExpr
+ramNoiseDur = Lit 0xC008   -- frames until next hit (counts down from 120)
+ramNoiseEnv = Lit 0xC009   -- envelope frames remaining (counts down, 0 = silent)
+
+-- ---------------------------------------------------------------------------
+-- Note frequencies: N = round(3579545 / (32 * hz))
+-- ---------------------------------------------------------------------------
+
+nE5, nDs5, nB4 :: Note
+nE5  = quantizeHz 659.26   -- E5  (melody)
+nDs5 = quantizeHz 622.25   -- D#5 (melody)
+nB4  = quantizeHz 493.88   -- B4  (melody)
+
+nE3, nA3, nB3 :: Note
+nE3 = quantizeHz 164.81    -- E3  (bass, root)
+nA3 = quantizeHz 220.00    -- A3  (bass, IV)
+nB3 = quantizeHz 246.94    -- B3  (bass, V)
+
+nGs4, nCs5 :: Note
+nGs4 = quantizeHz 415.30   -- G#4 (harmony, third of E)
+nCs5 = quantizeHz 554.37   -- C#5 (harmony, third of A)
+-- third of B is D#5 = nDs5, already defined
+
 -- ---------------------------------------------------------------------------
 -- Screen / sprite constants
 -- ---------------------------------------------------------------------------
@@ -144,12 +183,232 @@ demo = do
   enableDisplay
 
   -- -------------------------------------------------------------------------
-  -- Main loop: wait for VBlank, sample D-pad, update SAT, repeat.
+  -- Music init: silence all channels, prime Tone0, set up sequencer state.
+  -- ramDur=1 so the first VBlank immediately loads note 0 (E5).
+  -- ramStep=3 so after the first increment-and-wrap we land on step 0.
+  -- -------------------------------------------------------------------------
+  silenceAll
+  setVolume 0 0     -- Tone0 at full volume (melody)
+  setVolume 1 3     -- Tone1 slightly quieter (bass)
+  setVolume 2 5     -- Tone2 quieter still (harmony)
+  ldi A 1
+  stnn ramDur
+  ldi A 3
+  stnn ramStep
+  ldi A 1
+  stnn ramBaseDur
+  ldi A 3
+  stnn ramBaseStep
+  ldi A 1
+  stnn ramHarmDur
+  ldi A 3
+  stnn ramHarmStep
+  ldi A 1
+  stnn ramNoiseDur
+  ldi A 0
+  stnn ramNoiseEnv
+
+  -- -------------------------------------------------------------------------
+  -- Main loop: wait for VBlank, advance music, sample D-pad, update SAT.
   -- D-pad bits on port 0xDC: 0=Up, 1=Down, 2=Left, 3=Right (active-low).
   -- -------------------------------------------------------------------------
   mainLoop <- defineLabel "mainloop"
 
+  -- Labels for the note-sequencer dispatch (created before use so they can be
+  -- referenced as forward targets by the conditional jumps above them).
+  noteNoChangeLbl <- freshLabel "_noteNoChange"
+  stepOkLbl       <- freshLabel "_stepOk"
+  note0Lbl        <- freshLabel "_note0"
+  note1Lbl        <- freshLabel "_note1"
+  note2Lbl        <- freshLabel "_note2"
+  note3Lbl        <- freshLabel "_note3"
+  noteAfterLbl    <- freshLabel "_noteAfter"
+
   waitVBlank
+
+  -- Decrement duration counter; skip note change when still nonzero.
+  ldAnn ramDur
+  dec A
+  stnn ramDur
+  jp_cc NZ (LabelRef noteNoChangeLbl)
+
+  -- Duration expired: reset to 30 frames (≈ quarter note at 120 BPM / 60 fps).
+  ldi A 30
+  stnn ramDur
+
+  -- Advance note step (0→1→2→3→0→…).
+  ldAnn ramStep
+  inc A
+  cpAn 4
+  jp_cc NZ (LabelRef stepOkLbl)
+  ldi A 0
+  rawLabel stepOkLbl
+  stnn ramStep          -- A = new step (0–3) after this store
+
+  -- Dispatch: play the note for this step.
+  --   Step 0: E5   Step 1: D#5   Step 2: E5   Step 3: B4
+  orA A                            -- sets Z if step == 0
+  jp_cc Z (LabelRef note0Lbl)
+  cpAn 1
+  jp_cc Z (LabelRef note1Lbl)
+  cpAn 2
+  jp_cc Z (LabelRef note2Lbl)
+  jp (LabelRef note3Lbl)
+
+  rawLabel note0Lbl
+  setToneFreq 0 nE5
+  jp (LabelRef noteAfterLbl)
+
+  rawLabel note1Lbl
+  setToneFreq 0 nDs5
+  jp (LabelRef noteAfterLbl)
+
+  rawLabel note2Lbl
+  setToneFreq 0 nE5
+  jp (LabelRef noteAfterLbl)
+
+  rawLabel note3Lbl
+  setToneFreq 0 nB4
+
+  rawLabel noteAfterLbl
+  rawLabel noteNoChangeLbl
+
+  -- -----------------------------------------------------------------------
+  -- Bass sequencer (Tone1): E3 → A3 → B3 → E3, 120 frames each (≈ 1 bar)
+  -- -----------------------------------------------------------------------
+  bassNoChangeLbl <- freshLabel "_bassNoChange"
+  bassStepOkLbl   <- freshLabel "_bassStepOk"
+  bass0Lbl        <- freshLabel "_bass0"
+  bass1Lbl        <- freshLabel "_bass1"
+  bass2Lbl        <- freshLabel "_bass2"
+  bass3Lbl        <- freshLabel "_bass3"
+  bassAfterLbl    <- freshLabel "_bassAfter"
+
+  ldAnn ramBaseDur
+  dec A
+  stnn ramBaseDur
+  jp_cc NZ (LabelRef bassNoChangeLbl)
+
+  ldi A 120
+  stnn ramBaseDur
+
+  ldAnn ramBaseStep
+  inc A
+  cpAn 4
+  jp_cc NZ (LabelRef bassStepOkLbl)
+  ldi A 0
+  rawLabel bassStepOkLbl
+  stnn ramBaseStep
+
+  orA A
+  jp_cc Z (LabelRef bass0Lbl)
+  cpAn 1
+  jp_cc Z (LabelRef bass1Lbl)
+  cpAn 2
+  jp_cc Z (LabelRef bass2Lbl)
+  jp (LabelRef bass3Lbl)
+
+  rawLabel bass0Lbl
+  setToneFreq 1 nE3
+  jp (LabelRef bassAfterLbl)
+
+  rawLabel bass1Lbl
+  setToneFreq 1 nA3
+  jp (LabelRef bassAfterLbl)
+
+  rawLabel bass2Lbl
+  setToneFreq 1 nB3
+  jp (LabelRef bassAfterLbl)
+
+  rawLabel bass3Lbl
+  setToneFreq 1 nE3
+
+  rawLabel bassAfterLbl
+  rawLabel bassNoChangeLbl
+
+  -- -----------------------------------------------------------------------
+  -- Harmony sequencer (Tone2): G#4 → C#5 → D#5 → G#4, 120 frames each
+  -- (thirds of the E–A–B–E progression)
+  -- -----------------------------------------------------------------------
+  harmNoChangeLbl <- freshLabel "_harmNoChange"
+  harmStepOkLbl   <- freshLabel "_harmStepOk"
+  harm0Lbl        <- freshLabel "_harm0"
+  harm1Lbl        <- freshLabel "_harm1"
+  harm2Lbl        <- freshLabel "_harm2"
+  harm3Lbl        <- freshLabel "_harm3"
+  harmAfterLbl    <- freshLabel "_harmAfter"
+
+  ldAnn ramHarmDur
+  dec A
+  stnn ramHarmDur
+  jp_cc NZ (LabelRef harmNoChangeLbl)
+
+  ldi A 120
+  stnn ramHarmDur
+
+  ldAnn ramHarmStep
+  inc A
+  cpAn 4
+  jp_cc NZ (LabelRef harmStepOkLbl)
+  ldi A 0
+  rawLabel harmStepOkLbl
+  stnn ramHarmStep
+
+  orA A
+  jp_cc Z (LabelRef harm0Lbl)
+  cpAn 1
+  jp_cc Z (LabelRef harm1Lbl)
+  cpAn 2
+  jp_cc Z (LabelRef harm2Lbl)
+  jp (LabelRef harm3Lbl)
+
+  rawLabel harm0Lbl
+  setToneFreq 2 nGs4
+  jp (LabelRef harmAfterLbl)
+
+  rawLabel harm1Lbl
+  setToneFreq 2 nCs5
+  jp (LabelRef harmAfterLbl)
+
+  rawLabel harm2Lbl
+  setToneFreq 2 nDs5
+  jp (LabelRef harmAfterLbl)
+
+  rawLabel harm3Lbl
+  setToneFreq 2 nGs4
+
+  rawLabel harmAfterLbl
+  rawLabel harmNoChangeLbl
+
+  -- -----------------------------------------------------------------------
+  -- Noise channel: white noise hit on every bar downbeat (120 frames),
+  -- with an 8-frame volume envelope that fades to silence.
+  -- -----------------------------------------------------------------------
+  noiseEnvDoneLbl  <- freshLabel "_noiseEnvDone"
+  noiseTrigDoneLbl <- freshLabel "_noiseTrigDone"
+
+  -- Envelope: count down; when it reaches 0 silence the noise channel.
+  ldAnn ramNoiseEnv
+  orA A
+  jp_cc Z (LabelRef noiseEnvDoneLbl)
+  dec A
+  stnn ramNoiseEnv
+  jp_cc NZ (LabelRef noiseEnvDoneLbl)
+  setVolume 3 15                           -- envelope expired → silence
+  rawLabel noiseEnvDoneLbl
+
+  -- Trigger: fire a new hit when the countdown reaches 0.
+  ldAnn ramNoiseDur
+  dec A
+  stnn ramNoiseDur
+  jp_cc NZ (LabelRef noiseTrigDoneLbl)
+  ldi A 120
+  stnn ramNoiseDur
+  ldi A 8
+  stnn ramNoiseEnv
+  setNoise WhiteNoise 0                    -- white noise, rate N/512
+  setVolume 3 0                            -- full volume
+  rawLabel noiseTrigDoneLbl
 
   inA 0xDC
   ld B A

@@ -11,11 +11,9 @@ import Z80
 -- RAM layout  (just below the stack at 0xDFF0)
 -- ---------------------------------------------------------------------------
 
-sprX, sprY, sprDX, sprDY :: AddrExpr
-sprX  = Lit 0xC000
-sprY  = Lit 0xC001
-sprDX = Lit 0xC002
-sprDY = Lit 0xC003
+sprX, sprY :: AddrExpr
+sprX = Lit 0xC000
+sprY = Lit 0xC001
 
 -- ---------------------------------------------------------------------------
 -- Screen / sprite constants
@@ -65,52 +63,35 @@ checkerTile = tile
   ]
 
 -- ---------------------------------------------------------------------------
--- Axis-update helper
+-- D-pad input helpers
 -- ---------------------------------------------------------------------------
--- Emits Z80 code to move a sprite coordinate by its delta and bounce it
--- between minVal and maxVal (inclusive).  Both value and delta are in RAM.
--- Registers clobbered: A, F.
+-- Port 0xDC bits 0-3 are the D-pad (Up/Down/Left/Right), active-low: a
+-- cleared bit means the button is held.  Caller must load port 0xDC into B
+-- before invoking these helpers.  Registers clobbered: A, F.
 
-updateAxis :: AddrExpr -> AddrExpr -> Word8 -> Word8 -> Asm ()
-updateAxis valAddr deltaAddr minVal maxVal = do
-  goNeg <- freshLabel "_goNeg"
-  decOk <- freshLabel "_decOk"
-  done  <- freshLabel "_axisDone"
-
-  -- Branch on sign bit of delta (0xFF = -1 has bit 7 set)
-  ldAnn deltaAddr
-  bit 7 A
-  jr_cc NZ (LabelRef goNeg)
-
-  -- Moving in positive direction: val++
-  ldAnn valAddr
-  inc A
-  stnn valAddr
-  cpAn (maxVal + 1)        -- carry set iff A < maxVal+1 (still in range)
-  jr_cc CF (LabelRef done)
-  ldi A maxVal             -- clamp to max
-  stnn valAddr
-  ldi A 0xFF               -- delta = -1
-  stnn deltaAddr
-  jr (LabelRef done)
-
-  rawLabel goNeg
-  -- Moving in negative direction: check BEFORE decrement to avoid Word8 wrap.
-  -- If val==minVal we'd decrement to 255 (wraps unsigned), which passes cp.
+moveNeg :: Int -> AddrExpr -> Word8 -> Asm ()
+moveNeg bitN valAddr minVal = do
+  skip <- freshLabel "_negSkip"
+  bit bitN B
+  jr_cc NZ (LabelRef skip)        -- bit set = not pressed
   ldAnn valAddr
   cpAn minVal
-  jr_cc NZ (LabelRef decOk) -- A != minVal: safe to decrement
-  -- Already at minVal: reverse direction, leave val unchanged
-  ldi A 1                   -- delta = +1
-  stnn deltaAddr
-  jr (LabelRef done)
-
-  rawLabel decOk
+  jr_cc Z (LabelRef skip)         -- already at min, don't wrap
   dec A
   stnn valAddr
-  -- fall through to done
+  rawLabel skip
 
-  rawLabel done
+movePos :: Int -> AddrExpr -> Word8 -> Asm ()
+movePos bitN valAddr maxVal = do
+  skip <- freshLabel "_posSkip"
+  bit bitN B
+  jr_cc NZ (LabelRef skip)
+  ldAnn valAddr
+  cpAn maxVal
+  jr_cc Z (LabelRef skip)
+  inc A
+  stnn valAddr
+  rawLabel skip
 
 -- ---------------------------------------------------------------------------
 -- Main demo program
@@ -153,30 +134,30 @@ demo = do
   initSpriteEntry 0 124 72 1
   terminateSprites 1        -- no sprites after index 0
 
-  -- Initialise animation state in RAM
+  -- Initialise sprite position in RAM
   ldi A 124
   stnn sprX
   ldi A 72
   stnn sprY
-  ldi A 1
-  stnn sprDX
-  stnn sprDY
 
   -- Turn on display
   enableDisplay
 
   -- -------------------------------------------------------------------------
-  -- Main loop: wait for VBlank, update position, write to SAT, repeat
+  -- Main loop: wait for VBlank, sample D-pad, update SAT, repeat.
+  -- D-pad bits on port 0xDC: 0=Up, 1=Down, 2=Left, 3=Right (active-low).
   -- -------------------------------------------------------------------------
   mainLoop <- defineLabel "mainloop"
 
   waitVBlank
 
-  -- Update X coordinate (bounces between minSprX and maxSprX)
-  updateAxis sprX sprDX minSprX maxSprX
+  inA 0xDC
+  ld B A
 
-  -- Update Y coordinate (bounces between minSprY and maxSprY)
-  updateAxis sprY sprDY minSprY maxSprY
+  moveNeg 0 sprY minSprY    -- Up:    Y--
+  movePos 1 sprY maxSprY    -- Down:  Y++
+  moveNeg 2 sprX minSprX    -- Left:  X--
+  movePos 3 sprX maxSprX    -- Right: X++
 
   -- Write new X to SAT (A must hold the value before calling updateSpriteX)
   ldAnn sprX

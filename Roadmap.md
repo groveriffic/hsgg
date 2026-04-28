@@ -22,6 +22,8 @@
 ### Button Abstraction
 - GG start button (port 0x00), d-pad, and two action buttons
 - Debouncing helpers
+- Button combination helpers
+- Button sequence helpers
 
 ## Graphics
 ### Scrolling
@@ -97,8 +99,9 @@ Haskell eDSL.
 - Milliseconds, Microseconds?
 - Clock Cycles or whatever is customary for Z80
 - Test suite to ensure a routine fits within a performance budget
+
 ### Emulation Test
-- Build minimal rom
-- Run emulator
-- Make assertions on emulator state
-- Make assertions on screen shot capture
+- [x] Build minimal rom
+- [x] Run emulator
+- [x] Make assertions on emulator state
+- [ ] Make assertions on screen shot capture

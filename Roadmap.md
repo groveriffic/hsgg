@@ -10,7 +10,7 @@
 6. **Scrolling / Screen Coordinates** — core graphics capability; unblocks most game types
 7. **Composite Sprites / Raster Effects** — richer visuals once the basics are solid
 8. **Collision Detection** — required for gameplay logic
-9. **Audio** — BGM and SFX; significant VDP/PSG research required
+9. **Audio** — BGM and SFX done; Voice speculative
 10. **Bank Switching** — unblocks programs larger than 32KB
 11. **Static Analysis** (timing, emulation tests) — polish and confidence tooling
 12. **SRAM / Save Data** — late-stage feature for shipping games
@@ -83,8 +83,6 @@ Haskell eDSL.
 ### Collision Detection
 
 ## Audio
-### Background Music
-### Sound Effects
 ### Voice?
 - 1-bit PCM via PSG envelope tricks; extremely constrained on GG — speculative
 

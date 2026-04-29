@@ -82,18 +82,6 @@ N = round(clock / (32 × f_out))
 | C5   | 523.3         | 214        |
 | C6   | 1046.5        | 107        |
 
-Precompute a note table in Haskell at assemble time:
-
-```haskell
-noteN :: Double -> Word16
-noteN freq = round (3579545.0 / (32.0 * freq))
-
--- Equal-tempered chromatic scale, A4=440 Hz
-noteTable :: [Word16]   -- indices: 0=C2, 1=C#2, ..., 71=B7
-noteTable = [ noteN (440.0 * 2.0 ** ((fromIntegral i - 45) / 12.0))
-            | i <- [0..71] ]
-```
-
 ---
 
 ## Volume
@@ -107,11 +95,6 @@ Volume is set with a latch byte with `t=1`:
 Volume is an **attenuation** value: `0` = maximum volume, `15` = silence.  Each step is
 approximately 2 dB quieter.
 
-```
-OUT (0x7F), 0x9F    ; silence channel 0 (0x90 | 0x0F)
-OUT (0x7F), 0x90    ; channel 0 at full volume
-```
-
 ---
 
 ## Noise Channel
@@ -123,146 +106,134 @@ Bits 1:0  Rate:  00=N/512, 01=N/1024, 10=N/2048, 11=use tone channel 2 frequency
 Bit  2    Type:  0=periodic (buzzy), 1=white noise
 ```
 
-White noise at rate 2 (N/2048): `OUT (0x7F), 0xE7`  
-Periodic at rate 0:            `OUT (0x7F), 0xE0`
-
 To use tone channel 2 as the noise rate source, set noise rate = 3 and program channel 2's
 frequency normally.  This allows a tuned bass drum effect.
 
 ---
 
-## Suggested DSL Abstraction
+## DSL: `GameGear.PSG`
 
 ```haskell
-portPSG :: Word8
-portPSG = 0x7F
+portPSG :: Word8   -- 0x7F
+```
 
--- | Channel identifiers
-data PSGChannel = Tone0 | Tone1 | Tone2 | Noise
-  deriving (Eq, Ord, Enum, Bounded)
+### Note type
 
--- | Set tone frequency on a channel (compile-time constant).
--- Destroys A.
-setToneFreq :: PSGChannel -> Word16 -> Asm ()
-setToneFreq ch n = do
-  let chBits = fromIntegral (fromEnum ch) :: Word8
-      lo = 0x80 .|. (chBits `shiftL` 5) .|. fromIntegral (n .&. 0x0F)
-      hi = fromIntegral ((n `shiftR` 4) .&. 0x3F)
-  ldi A lo; outA portPSG
-  ldi A hi; outA portPSG
+```haskell
+newtype Note = Note { noteCounter :: Word16 }
 
--- | Set channel volume (0 = max, 15 = silent). Destroys A.
-setVolume :: PSGChannel -> Word8 -> Asm ()
-setVolume ch vol = do
-  let chBits = fromIntegral (fromEnum ch) :: Word8
-      cmd = 0x90 .|. (chBits `shiftL` 5) .|. (vol .&. 0x0F)
-  ldi A cmd; outA portPSG
+quantizeHz   :: Double -> Note    -- nearest representable frequency
+noteActualHz :: Word16 -> Double  -- true frequency for a counter value
+```
 
--- | Silence all channels. Destroys A.
+### Tone / volume / noise
+
+```haskell
+-- Emit two OUT instructions (latch + data). Destroys A.
+setToneFreq :: Word8 -> Note -> Asm ()   -- channel (0–2), note
+
+-- Emit one OUT instruction. Destroys A.
+setVolume :: Word8 -> Word8 -> Asm ()    -- channel (0–3), attenuation (0=max, 15=silent)
+
+-- Silence all four channels. Destroys A.
 silenceAll :: Asm ()
-silenceAll = mapM_ (\ch -> setVolume ch 15) [Tone0, Tone1, Tone2, Noise]
 
--- | Configure noise channel.
-data NoiseConfig = NoiseConfig
-  { noiseRate :: Word8   -- 0–3 (3 = use Tone2)
-  , noiseWhite :: Bool   -- True = white noise, False = periodic
-  }
+data NoiseType = WhiteNoise | PeriodicNoise
 
-setNoise :: NoiseConfig -> Asm ()
-setNoise (NoiseConfig rate white) = do
-  let typeBit = if white then 0x04 else 0x00
-      cmd = 0xE0 .|. typeBit .|. (rate .&. 0x03)
-  ldi A cmd; outA portPSG
+-- rate: 0=N/512, 1=N/1024, 2=N/2048, 3=use Tone2. Destroys A.
+setNoise :: NoiseType -> Word8 -> Asm ()
+```
+
+### Usage example
+
+```haskell
+setVolume 0 0                          -- channel 0 at full volume
+setToneFreq 0 (quantizeHz 523.25)      -- C5
+-- ... after VBlank ...
+setToneFreq 0 (quantizeHz 659.25)      -- E5
+setVolume 0 15                         -- silence
+
+-- Explosion SFX
+setNoise WhiteNoise 2
+setVolume 3 0    -- noise channel at full volume
 ```
 
 ---
 
-## Music Data Format
+## DSL: `GameGear.Music`
 
-Music is typically stored as a compact stream of commands in ROM, interpreted by a music
-driver subroutine called once per frame (or at a fixed tick rate from the VBlank ISR).
+Data-driven music driver for tone channels.  Music is stored as a compact ROM table and
+interpreted by a per-channel driver subroutine, typically called once per VBlank.
 
-### Simple Command Format
+### Table format
+
+Each entry is either a note (3 bytes) or a loop sentinel (1 byte):
 
 ```
-| Byte  | Meaning                                    |
-|-------|--------------------------------------------|
-| 0xFx  | Set channel 0 volume to x (0=max, F=silent)|
-| 0xEx  | Set channel 1 volume                       |
-| 0xDx  | Set channel 2 volume                       |
-| 0xCN  | Set channel 0 note index N (into noteTable)|
-| 0xBN  | Set channel 1 note                         |
-| 0xAN  | Set channel 2 note                         |
-| 0x00  | End of track (loop or stop)                |
-| other | Wait N ticks                               |
+Note:     [duration (frames), N & 0x0F, (N >> 4) & 0x3F]
+LoopBack: [0x00]
 ```
 
-### Music Driver Sketch
+### RAM layout per channel
+
+3 bytes: `[ptrLo, ptrHi, dur]` — current read pointer (2 bytes) and remaining duration counter.
+
+### API
 
 ```haskell
--- RAM: ramMusicPtr (2 bytes), ramMusicTick (1 byte)
+data MusicEntry
+  = ToneNote Note Word8   -- frequency and duration in frames (duration > 0)
+  | LoopBack              -- resets driver pointer to table start
 
--- | Advance the music driver by one tick. Call from VBlank ISR or main loop.
--- Destroys A, HL, BC.
-musicTick :: Asm ()
-musicTick = do
-  -- decrement wait counter
-  ldAnn (Lit ramMusicTick)
-  dec A
-  jp_cc NZ (ref "_musicWait")
-  -- fetch next command
-  ldHLind (Lit ramMusicPtr)
-  ldHL A                      -- A = command byte
-  inc16 HL
-  stHLaddr (Lit ramMusicPtr)  -- advance pointer
-  -- dispatch command
-  cpAn 0x00; jp_cc Z (ref "_musicEnd")
-  -- ... command decode ...
-  rawLabel (Label "_musicWait")
-  stnn (Lit ramMusicTick)
-  rawLabel (Label "_musicEnd")
+-- Emit ROM table bytes; returns the table's start label.
+-- Place inside a jp-over block so execution cannot fall into the data.
+emitToneTable :: [MusicEntry] -> Asm Label
+
+-- Emit driver subroutine; returns its label.
+-- Call once per frame (or from VBlank ISR) per active channel.
+-- Destroys A, HL.
+emitToneDriver
+  :: Word8     -- PSG channel (0, 1, or 2)
+  -> Label     -- table label from emitToneTable
+  -> AddrExpr  -- RAM: pointer lo byte
+  -> AddrExpr  -- RAM: pointer hi byte
+  -> AddrExpr  -- RAM: duration counter
+  -> Asm Label
 ```
 
----
+### Driver behaviour
 
-## Usage Examples
+1. Decrement duration counter; return early (`RET NZ`) if still nonzero.
+2. Read next table entry.  `LoopBack` (`0x00` duration) resets the pointer to the table start.
+3. Send frequency to PSG (two OUT writes) and store the new duration and pointer back to RAM.
 
-### Play a C-major Arpeggio
-
-```haskell
-setVolume Tone0 0          -- channel 0 at full volume
-setToneFreq Tone0 (noteN 523.25)   -- C5
-waitVBlank
-setToneFreq Tone0 (noteN 659.25)   -- E5
-waitVBlank
-setToneFreq Tone0 (noteN 783.99)   -- G5
-waitVBlank
-setVolume Tone0 15         -- silence
-```
-
-### Sound Effect: Explosion
+### Usage example
 
 ```haskell
-setNoise (NoiseConfig { noiseRate = 2, noiseWhite = True })
-setVolume Noise 0          -- full volume
--- ... after 8 frames, fade out:
-setVolume Noise 8
--- ... after 8 more:
-setVolume Noise 15
+-- Assemble time: emit table
+tbl <- emitToneTable
+  [ ToneNote (quantizeHz 261.6) 16   -- C4, 16 frames
+  , ToneNote (quantizeHz 329.6) 16   -- E4
+  , ToneNote (quantizeHz 392.0) 32   -- G4
+  , LoopBack
+  ]
+
+-- Assemble time: emit driver for channel 0
+drv <- emitToneDriver 0 tbl (Lit ramPtr0Lo) (Lit ramPtr0Hi) (Lit ramDur0)
+
+-- Runtime: call once per VBlank
+call (LabelRef drv)
 ```
 
 ---
 
 ## Notes
 
-- **Write timing**: The PSG requires the CPU to write a complete command before the next write.
-  At 3.58 MHz, one `OUT` instruction takes 11 T-states (~3 µs) — far longer than any SN76489
-  setup time (~23 ns).  No delay is needed between bytes.
-- **Stereo (GG-specific)**: The Game Gear has a hardware stereo panning register at I/O port
-  `0x06`.  Each bit independently enables left/right output per channel (bits 7:4 = right
-  enable, bits 3:0 = left enable).  Writing `0xFF` gives full stereo; `0x00` silences all.
-- **Voice / PCM**: 1-bit PCM can be approximated by rapidly switching a channel's volume
-  between 0 and 15 at the sample rate — extremely CPU-intensive and practically limited to
-  8 kHz at best.  See the Roadmap "Voice" item.
+- **Write timing**: At 3.58 MHz, one `OUT` takes 11 T-states (~3 µs) — far longer than the
+  SN76489 setup time (~23 ns).  No delay is needed between bytes.
+- **Stereo (GG-specific)**: Port `0x06` independently enables left/right output per channel
+  (bits 7:4 = right enable, bits 3:0 = left enable).  `0xFF` = full stereo; `0x00` = silence.
 - **Music vs. SFX priority**: A common pattern dedicates channels 0–1 to music and channel 2
-  to SFX.  The music driver skips its channel-2 update frame while an SFX is active.
+  to SFX.  The music driver skips its channel update while an SFX is active.
+- **Voice / PCM**: 1-bit PCM can be approximated by rapidly switching a channel's volume
+  between 0 and 15 — extremely CPU-intensive.  See the Roadmap "Voice" item.

@@ -1,16 +1,36 @@
-module Z80.ROM.GameGear
-  ( ROMConfig (..)
+-- | Game Gear ROM assembly pipeline.
+--
+-- Combines the linker, ROM format, and checksum into a single
+-- @'assemble'@ entry point that produces a ready-to-run @.gg@ image.
+module GameGear.ROM
+  ( -- * ROM configuration
+    ROMConfig (..)
   , ROMSize (..)
   , GGRegion (..)
-  , ROMError (..)
   , defaultROMConfig
   , romSizeBytes
+
+    -- * Errors
+  , ROMError (..)
+  , AssemblerError (..)
+
+    -- * Assembly
+  , assemble
+  , assembleWithSymbols
   , buildROM
   ) where
 
-import Data.Bits        (shiftL, shiftR, (.&.), (.|.))
-import Data.Word        (Word8, Word16, Word32)
-import qualified Data.ByteString as BS
+import           Data.Bits        (shiftL, shiftR, (.&.), (.|.))
+import           Data.Map.Strict  (Map)
+import qualified Data.Map.Strict  as Map
+import qualified Data.ByteString  as BS
+import           Data.Text        (Text)
+import           Data.Word        (Word8, Word16, Word32)
+
+import Z80.Asm    (Asm, runAsm)
+import Z80.Linker (LinkerError)
+import qualified Z80.Linker as Linker (assembleWithSymbols)
+import Z80.Types  (labelName)
 
 -- ---------------------------------------------------------------------------
 -- Configuration
@@ -61,6 +81,11 @@ data ROMError
   | CodeOverlapsHeader     -- code bytes reach into the Sega header area
   deriving (Show, Eq)
 
+data AssemblerError
+  = LinkerErr LinkerError
+  | ROMErr    ROMError
+  deriving (Show, Eq)
+
 -- ---------------------------------------------------------------------------
 -- ROM layout constants
 -- ---------------------------------------------------------------------------
@@ -73,7 +98,27 @@ checksumOffset :: Int
 checksumOffset = 0x7FFA  -- 2 bytes (little-endian Word16)
 
 -- ---------------------------------------------------------------------------
--- Build ROM image
+-- Assembly pipeline
+-- ---------------------------------------------------------------------------
+
+-- | Full pipeline: Asm program → linked bytes → Game Gear ROM image.
+assemble :: ROMConfig -> Asm () -> Either AssemblerError BS.ByteString
+assemble cfg program = fst <$> assembleWithSymbols cfg program
+
+-- | Like 'assemble' but also returns a map of label name → resolved address.
+assembleWithSymbols
+  :: ROMConfig
+  -> Asm ()
+  -> Either AssemblerError (BS.ByteString, Map Text Word16)
+assembleWithSymbols cfg program = do
+  let stmts = runAsm program
+  (bytes, lmap) <- either (Left . LinkerErr) Right
+                     (Linker.assembleWithSymbols (romOrigin cfg) stmts)
+  rom <- either (Left . ROMErr) Right (buildROM cfg bytes)
+  pure (rom, Map.mapKeys labelName lmap)
+
+-- ---------------------------------------------------------------------------
+-- ROM image builder
 -- ---------------------------------------------------------------------------
 
 buildROM :: ROMConfig -> BS.ByteString -> Either ROMError BS.ByteString
@@ -173,4 +218,3 @@ computeChecksum size rom =
                   else BS.empty
       sumBS bs = BS.foldl' (\acc b -> acc + fromIntegral b) (0 :: Word16) bs
   in sumBS region1 + sumBS region2
-

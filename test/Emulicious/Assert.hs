@@ -20,6 +20,7 @@ import           System.Directory       (createDirectoryIfMissing)
 import           Test.Hspec
 
 import           Z80
+import           GameGear
 import           Emulicious.DAP         (DAPClient)
 import qualified Emulicious.DAP         as DAP
 import           Emulicious.Runner      (ContainerID, withEmulicious,

@@ -6,6 +6,7 @@ import Data.Word (Word8)
 import System.Exit (exitFailure)
 
 import Z80
+import GameGear
 
 -- ---------------------------------------------------------------------------
 -- RAM layout

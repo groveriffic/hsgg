@@ -31,9 +31,11 @@ library
       Z80.Opcodes
       Z80.Encoder
       Z80.Linker
-      Z80.ROM.GameGear
-      Z80.ROM.Builder
-      Z80.Platform.GameGear
+      GameGear
+      GameGear.ROM
+      GameGear.VDP
+      GameGear.PSG
+      GameGear.Music
   other-modules:
       Paths_hsgg
   autogen-modules:

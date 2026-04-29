@@ -87,8 +87,6 @@ Haskell eDSL.
 - 1-bit PCM via PSG envelope tricks; extremely constrained on GG — speculative
 
 ## Debug Tooling
-### Symbol Output
-- Emit `.sym` files for use in emulator debuggers (e.g. Emulicious)
 ### Annotated Disassembly
 - Human-readable disassembly with label names for inspection
 

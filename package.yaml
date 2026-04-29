@@ -51,6 +51,7 @@ library:
   - GameGear.VDP
   - GameGear.PSG
   - GameGear.Music
+  - GameGear.Sym
 
 executables:
   hsgg-exe:

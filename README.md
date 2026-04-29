@@ -1,6 +1,12 @@
 # hsgg
 
-Haskell based Z80 compiler for Sega Game Gear.
+Game Gear Assembler hosted in Haskell
 
-Rediculous concept, but might learn something.
+```mermaid
+venn-beta
+  set HS["Haskell"]
+  set GG["Sega Game Gear"]
+  union HS,GG
+```
 
+[Roadmap](./Roadmap.md)

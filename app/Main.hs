@@ -7,6 +7,7 @@ import System.Exit (exitFailure)
 
 import Z80
 import GameGear
+import GameGear.Sym (writeSymFile)
 
 -- ---------------------------------------------------------------------------
 -- RAM layout
@@ -306,11 +307,13 @@ demo = do
 
 main :: IO ()
 main = do
-  let result = assemble defaultROMConfig demo
+  let result = assembleWithSymbols defaultROMConfig demo
   case result of
     Left err -> do
       putStrLn $ "Error: " <> show err
       exitFailure
-    Right rom -> do
+    Right (rom, syms) -> do
       BS.writeFile "demo.gg" rom
       putStrLn $ "Wrote demo.gg (" <> show (BS.length rom) <> " bytes)"
+      writeSymFile "demo.sym" syms
+      putStrLn $ "Wrote demo.sym (" <> show (length syms) <> " symbols)"

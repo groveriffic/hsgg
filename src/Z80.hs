@@ -9,8 +9,11 @@ module Z80
   , module Z80.Types
     -- * Opcode DSL
   , module Z80.Opcodes
+    -- * Control flow combinators
+  , module Z80.ControlFlow
   ) where
 
 import Z80.Asm
 import Z80.Types
 import Z80.Opcodes
+import Z80.ControlFlow

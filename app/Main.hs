@@ -100,27 +100,23 @@ checkerTile = tile
 
 moveNeg :: Int -> AddrExpr -> Word8 -> Asm ()
 moveNeg bitN valAddr minVal = do
-  skip <- freshLabel "_negSkip"
   bit bitN B
-  jr_cc NZ (LabelRef skip)
-  ldAnn valAddr
-  cpAn minVal
-  jr_cc Z (LabelRef skip)
-  dec A
-  stnn valAddr
-  rawLabel skip
+  ifAsm Z $ do          -- Z set when bit is clear (button pressed, active-low)
+    ldAnn valAddr
+    cpAn minVal
+    ifAsm NZ $ do       -- not at minimum
+      dec A
+      stnn valAddr
 
 movePos :: Int -> AddrExpr -> Word8 -> Asm ()
 movePos bitN valAddr maxVal = do
-  skip <- freshLabel "_posSkip"
   bit bitN B
-  jr_cc NZ (LabelRef skip)
-  ldAnn valAddr
-  cpAn maxVal
-  jr_cc Z (LabelRef skip)
-  inc A
-  stnn valAddr
-  rawLabel skip
+  ifAsm Z $ do          -- Z set when bit is clear (button pressed, active-low)
+    ldAnn valAddr
+    cpAn maxVal
+    ifAsm NZ $ do       -- not at maximum
+      inc A
+      stnn valAddr
 
 -- ---------------------------------------------------------------------------
 -- Main demo program
@@ -254,9 +250,6 @@ demo = do
   -- -------------------------------------------------------------------------
   mainLoop <- defineLabel "mainloop"
 
-  noiseEnvDoneLbl  <- freshLabel "_noiseEnvDone"
-  noiseTrigDoneLbl <- freshLabel "_noiseTrigDone"
-
   waitVBlank
 
   -- Advance each tone channel via its driver subroutine.
@@ -264,25 +257,24 @@ demo = do
   call (LabelRef basDriver)
   call (LabelRef harDriver)
 
-  -- Noise channel: envelope countdown then periodic hit trigger.
+  -- Noise envelope countdown: if env > 0, dec; when it hits 0 silence channel.
   ldAnn ramNoiseEnv
   orA A
-  jp_cc Z (LabelRef noiseEnvDoneLbl)
-  dec A
-  stnn ramNoiseEnv
-  jp_cc NZ (LabelRef noiseEnvDoneLbl)
-  setVolume 3 15                           -- envelope expired → silence
-  rawLabel noiseEnvDoneLbl
+  ifAsm NZ $ do
+    dec A
+    stnn ramNoiseEnv
+    ifAsm Z $
+      setVolume 3 15                       -- envelope just expired → silence
 
+  -- Noise trigger: dec duration; when it hits 0 fire a new hit.
   ldAnn ramNoiseDur
   dec A
   stnn ramNoiseDur
-  jp_cc NZ (LabelRef noiseTrigDoneLbl)
-  ldi A 120; stnn ramNoiseDur
-  ldi A 8;   stnn ramNoiseEnv
-  setNoise WhiteNoise 0
-  setVolume 3 0
-  rawLabel noiseTrigDoneLbl
+  ifAsm Z $ do
+    ldi A 120; stnn ramNoiseDur
+    ldi A 8;   stnn ramNoiseEnv
+    setNoise WhiteNoise 0
+    setVolume 3 0
 
   -- Sample D-pad and move sprite.
   inA 0xDC

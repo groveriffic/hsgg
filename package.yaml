@@ -44,6 +44,7 @@ library:
   - Z80.Types
   - Z80.Asm
   - Z80.Opcodes
+  - Z80.ControlFlow
   - Z80.Encoder
   - Z80.Linker
   - GameGear

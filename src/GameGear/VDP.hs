@@ -69,6 +69,10 @@ module GameGear.VDP
 
     -- * VBlank sync
   , waitVBlank
+
+    -- * Interrupt helpers
+  , ackVDPInterrupt
+  , enableLineIRQ
   ) where
 
 import Data.Bits  (shiftL, shiftR, (.&.), (.|.))
@@ -424,3 +428,26 @@ waitVBlank = do
   inA portVDPCtrl
   bit 7 A
   jr_cc Z (LabelRef lbl)
+
+-- ---------------------------------------------------------------------------
+-- Interrupt helpers
+-- ---------------------------------------------------------------------------
+
+-- | Read (and clear) the VDP status register.
+-- Place at the top of the ISR; bit 7 of A is set for VBlank, clear for a
+-- line interrupt.  Destroys A.
+ackVDPInterrupt :: Asm ()
+ackVDPInterrupt = inA portVDPCtrl
+
+-- | Enable line interrupts and set the line counter reload value.
+--
+-- The counter decrements each active scanline; when it reaches zero an
+-- interrupt fires and the counter reloads.  @enableLineIRQ 0@ fires every
+-- line; @enableLineIRQ 143@ fires once at the bottom of the 144-line screen.
+--
+-- Call 'Z80.ISR.enableVBlankIRQ' to enable interrupt delivery.
+-- Destroys A.
+enableLineIRQ :: Word8 -> Asm ()
+enableLineIRQ counter = do
+  vdpWriteReg 0  0x14   -- Mode 4 + line IRQ enable
+  vdpWriteReg 10 counter

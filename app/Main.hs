@@ -38,6 +38,17 @@ ramNoiseDur, ramNoiseEnv :: AddrExpr
 ramNoiseDur = Lit 0xC00B
 ramNoiseEnv = Lit 0xC00C
 
+-- VBlank ISR frame-ready flag (set by ISR, cleared by main loop)
+ramFrameReady :: AddrExpr
+ramFrameReady = Lit 0xC00D
+
+-- Pause state and Start button debounce
+ramPaused    :: AddrExpr
+ramPaused    = Lit 0xC00E  -- 0 = playing, 1 = paused
+
+ramStartLast :: AddrExpr
+ramStartLast = Lit 0xC00F  -- bit 7 of port 0x00 on the previous frame
+
 -- ---------------------------------------------------------------------------
 -- Note frequencies: N = round(3579545 / (32 * hz))
 -- ---------------------------------------------------------------------------
@@ -127,10 +138,22 @@ demo = do
   org 0x0000
   di
   ld16n SP 0xDFF0
-
-  -- Jump over all inline tables and subroutines to init code.
   initLbl <- freshLabel "_init"
   jp (LabelRef initLbl)
+
+  -- VBlank ISR (IM 1 fixed vector).  Sets ramFrameReady so the main loop
+  -- can synchronise without polling the VDP status port directly.
+  org 0x0038
+  isrEnter
+  ackVDPInterrupt        -- read + clear VDP status; A = status byte
+  ldi A 1; stnn ramFrameReady
+  isrLeave
+
+  -- NMI handler: Pause button.  Nothing to do — just return cleanly.
+  org 0x0066
+  push AF
+  pop AF
+  retn
 
   -- Music tables – Vivaldi, Four Seasons Op.8 No.1 "Spring" (E major)
   -- ~1890 frames ≈ 31.5 s per loop at 60 fps / 120 BPM
@@ -219,6 +242,10 @@ demo = do
 
   enableDisplay
 
+  -- Enable ISR-based VBlank sync (IM 1 + EI) and clear the flag.
+  ldi A 0; stnn ramFrameReady
+  enableVBlankIRQ
+
   -- Music init: silence all channels, set volumes, prime RAM pointers.
   -- dur=1 causes the first VBlank to immediately load note 0 from each table.
   silenceAll
@@ -244,37 +271,69 @@ demo = do
   ldi A 1; stnn ramNoiseDur
   ldi A 0; stnn ramNoiseEnv
 
+  ldi A 0;    stnn ramPaused
+  ldi A 0x80; stnn ramStartLast   -- 0x80 = Start not pressed (bit 7 high)
+
   -- -------------------------------------------------------------------------
   -- Main loop: wait for VBlank, advance music, sample D-pad, update SAT.
   -- D-pad bits on port 0xDC: 0=Up, 1=Down, 2=Left, 3=Right (active-low).
   -- -------------------------------------------------------------------------
   mainLoop <- defineLabel "mainloop"
 
-  waitVBlank
+  -- Wait for the VBlank ISR to set ramFrameReady, then clear it.
+  waitLoop <- freshLabel "_waitFrame"
+  rawLabel waitLoop
+  ldAnn ramFrameReady
+  cpAn 0
+  jr_cc Z (LabelRef waitLoop)
+  ldi A 0; stnn ramFrameReady
 
-  -- Advance each tone channel via its driver subroutine.
-  call (LabelRef melDriver)
-  call (LabelRef basDriver)
-  call (LabelRef harDriver)
-
-  -- Noise envelope countdown: if env > 0, dec; when it hits 0 silence channel.
-  ldAnn ramNoiseEnv
-  orA A
+  -- Start button: toggle pause on falling edge (GG port 0x00 bit 7, active-low).
+  inA 0x00
+  andAn 0x80           -- A = 0 (pressed) or 0x80 (not pressed)
+  ld C A               -- C = current bit
+  ldAnn ramStartLast   -- A = previous bit
+  ld B A               -- B = previous bit
+  ld A C
+  stnn ramStartLast    -- last ← current
+  ld A B
+  orA A                -- NZ if prev was 0x80 (not pressed)
   ifAsm NZ $ do
-    dec A
-    stnn ramNoiseEnv
-    ifAsm Z $
-      setVolume 3 15                       -- envelope just expired → silence
+    ld A C
+    orA A              -- Z if current is 0 (pressed)
+    ifAsm Z $ do       -- falling edge: Start just pressed
+      ldAnn ramPaused
+      cpAn 0
+      ifElseAsm Z
+        (do ldi A 1; stnn ramPaused; silenceAll)
+        (do ldi A 0; stnn ramPaused; setVolume 0 0; setVolume 1 3; setVolume 2 5)
 
-  -- Noise trigger: dec duration; when it hits 0 fire a new hit.
-  ldAnn ramNoiseDur
-  dec A
-  stnn ramNoiseDur
+  -- Advance music and noise only when not paused.
+  ldAnn ramPaused
+  cpAn 0
   ifAsm Z $ do
-    ldi A 120; stnn ramNoiseDur
-    ldi A 8;   stnn ramNoiseEnv
-    setNoise WhiteNoise 0
-    setVolume 3 0
+    call (LabelRef melDriver)
+    call (LabelRef basDriver)
+    call (LabelRef harDriver)
+
+    -- Noise envelope countdown: if env > 0, dec; when it hits 0 silence channel.
+    ldAnn ramNoiseEnv
+    orA A
+    ifAsm NZ $ do
+      dec A
+      stnn ramNoiseEnv
+      ifAsm Z $
+        setVolume 3 15                     -- envelope just expired → silence
+
+    -- Noise trigger: dec duration; when it hits 0 fire a new hit.
+    ldAnn ramNoiseDur
+    dec A
+    stnn ramNoiseDur
+    ifAsm Z $ do
+      ldi A 120; stnn ramNoiseDur
+      ldi A 8;   stnn ramNoiseEnv
+      setNoise WhiteNoise 0
+      setVolume 3 0
 
   -- Sample D-pad and move sprite.
   inA 0xDC

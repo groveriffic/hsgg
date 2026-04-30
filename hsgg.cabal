@@ -39,6 +39,7 @@ library
       GameGear.Music
       GameGear.Sym
   other-modules:
+      Z80.ISR
       Paths_hsgg
   autogen-modules:
       Paths_hsgg

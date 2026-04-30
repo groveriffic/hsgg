@@ -11,9 +11,12 @@ module Z80
   , module Z80.Opcodes
     -- * Control flow combinators
   , module Z80.ControlFlow
+    -- * ISR helpers
+  , module Z80.ISR
   ) where
 
 import Z80.Asm
 import Z80.Types
 import Z80.Opcodes
 import Z80.ControlFlow
+import Z80.ISR

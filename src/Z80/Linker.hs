@@ -83,7 +83,10 @@ emitBytes lmap origin stmts = go origin mempty (toList stmts)
     go _ acc [] = Right acc
     go pc acc (s : rest) = case s of
       DeclLabel _ -> go pc acc rest
-      ORG addr    -> go addr acc rest
+      ORG addr    ->
+        let gap = fromIntegral addr - fromIntegral pc :: Int
+            pad = if gap > 0 then foldMap BB.word8 (replicate gap 0x00) else mempty
+        in go addr (acc <> pad) rest
       DB bs       -> go (pc + fromIntegral (length bs))
                         (acc <> foldMap BB.word8 bs) rest
       DW ws       -> do

@@ -9,11 +9,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Test Commands
 
 ```bash
-# Build
-stack build
-
-# Build and run demo (generates demo.gg)
-stack build && stack exec hsgg-exe
+# Build and run demo (generates demo.gg and demo.sym)
+stack run
 
 # Run all tests (requires Emulicious at ~/Emulicious/Emulicious.jar)
 stack test
